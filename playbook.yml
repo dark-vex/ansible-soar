@@ -1,0 +1,141 @@
+---
+- name: AbuseIPDB Evaluation
+  hosts: localhost
+  vars_files:
+    - vars/credentials.yml
+
+  pre_tasks:
+    - name: Get Zabbix Auth token
+      uri:
+        url: "{{ zabbix_url }}"
+        method: POST
+        status_code: 200
+        timeout: 10
+        return_content: yes
+        headers:
+          Content-Type: application/json
+        body:
+          jsonrpc: "2.0"
+          method: "user.login"
+          params:
+            user: "{{ zabbix_user }}"
+            password: "{{ zabbix_pass }}"
+          id: 1
+          auth: null
+        body_format: json
+      register: auth_token
+
+    - name: Saving Zabbix auth_token
+      set_fact:
+        token: "{{ auth_token.json.result }}"
+
+    - include: tasks/jira.yml jira_task=assign
+
+    # Change to In Progress
+    - include: tasks/jira.yml jira_task=transition transition_id="11" transition_type="In Progress" # 11 In Progress, 21 Under Rewiew, 31 Approved, 41 Closed
+
+    # Assign label ansible_assigned and no_score to the issue
+    - include: tasks/jira.yml jira_task=labels
+      vars:
+        jira_labels:
+          - ansible_assigned
+          - no_score
+
+  tasks:
+    - name: Read issue data
+      jira:
+        uri: '{{ jira_server }}'
+        username: '{{ jira_user }}'
+        password: '{{ jira_pass }}'
+        project: AUT
+        operation: fetch
+        issue: '{{ issue_id }}'
+      register: issue
+
+    - name: Gathering and Saving zabbix_event_id and evaluate_ip
+      set_fact:
+        zabbix_event_id: "{{ issue.meta.fields.description | regex_findall('Original problem ID: [0-9]+') | regex_replace('Original problem ID: ') }}"
+        evaluate_ip: "{{ issue.meta.fields.description | regex_findall('\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b') | first }}"
+
+    # Acknowledge alert
+    - include: tasks/zabbix_transition.yml zabbix_transition_id="2" zabbix_transition_type="Acknowledged" # 1 close - 2 ack - 4 add message - 8 change severity - 16 unack
+
+    - name: Check IP Evaluation against AbuseIPDB
+      uri:
+        url: "https://api.abuseipdb.com/api/v2/check?ipAddress={{ evaluate_ip }}"
+        method: GET
+        return_content: yes
+        headers:
+          Key: "{{ api_key }}"
+          Accept: application/json
+        status_code: 200,404
+        timeout: 10
+      register: abuse_eval
+
+    - name: Gathering and Saving AbuseIPDB Evaluation
+      set_fact:
+        ipdb_score: "{{ abuse_eval.json.data.abuseConfidenceScore }}"
+        ipdb_country: "{{ abuse_eval.json.data.countryCode }}"
+        ipdb_domain: "{{ abuse_eval.json.data.domain }}"
+        ipdb_ip: "{{ abuse_eval.json.data.ipAddress }}"
+        ipdb_isp: "{{ abuse_eval.json.data.isp }}"
+        ipdb_lastreport: "{{ abuse_eval.json.data.lastReportedAt }}"
+        ipdb_distinc: "{{ abuse_eval.json.data.numDistinctUsers }}"
+        ipdb_nreports: "{{ abuse_eval.json.data.totalReports }}"
+        ipdb_ipparsed: "{{ abuse_eval.json.data.ipAddress | regex_replace('\\.', '-') }}"
+
+    # Add evaluation to the issue
+    - include: tasks/jira.yml jira_task=comment
+      vars:
+        jira_result: "AbuseIPDB evaluation"
+        jira_comment: |
+          Here the AbuseIPDB evaluation for IP {{ ipdb_ip }}
+          Score: {{ ipdb_score }}
+          Country: {{ ipdb_country }}
+          Domain: {{ ipdb_domain  }}
+          ISP: {{ ipdb_isp }}
+          Last report: {{ ipdb_lastreport }}
+          Reporting users (unique): {{ ipdb_distinc }}
+          IP Reported: {{ ipdb_nreports }} times
+
+    # Change to Under Review
+    - include: tasks/jira.yml jira_task=transition transition_id="21" transition_type="Under Rewiew" # 11 In Progress, 21 Under Rewiew, 31 Approved, 41 Closed
+
+    - block:
+      # Needs review comment
+      - include: tasks/jira.yml jira_task=comment
+        vars:
+          jira_result: "needs review"
+          jira_comment: |
+            The score is below the define threasold a manual intervetion is required!!
+            IP: {{ ipdb_ip }}
+            Score: {{ ipdb_score }}
+            A Screenshot of AbuseIPDB page has been taken for a quick review in case the API have failed
+      # Assign label ansible_assigned and evaluated to the issue
+      - include: tasks/jira.yml jira_task=labels
+        vars:
+          jira_labels:
+            - ansible_assigned
+            - evaluated
+            - needs_review
+      when: ipdb_score is version('50', '<')
+
+    - block:
+      # Assign label ansible_assigned and evaluated to the issue
+      - include: tasks/jira.yml jira_task=labels
+        vars:
+          jira_labels:
+            - ansible_assigned
+            - evaluated   
+            - bad_reputation
+      # Change to Under Review
+      - include: tasks/jira.yml jira_task=transition transition_id="31" transition_type="Approved" # 11 In Progress, 21 Under Rewiew, 31 Approved, 41 Closed
+      # Block IP on Sophos
+      - include: tasks/sophos_tasks.yml
+      - block:
+        # Close alert on Zabbix
+        - include: tasks/zabbix_transition.yml zabbix_transition_id="1" zabbix_transition_type="Closed" # 1 close - 2 ack - 4 add message - 8 change severity - 16 unack
+        # Change to Closed
+        - include: tasks/jira.yml jira_task=transition transition_id="41" transition_type="Closed" # 11 In Progress, 21 Under Rewiew, 31 Approved, 41 Closed
+        when: sophos_ban_status[0] == 'Configuration applied successfully'
+      when: ipdb_score is version('50', '>=')

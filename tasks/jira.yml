@@ -1,0 +1,61 @@
+---
+- name: Assign an issue
+  uri:
+    url: "{{ jira_server }}/rest/api/3/issue/{{ issue_id }}/assignee"
+    method: PUT
+    status_code: 204
+    timeout: 10
+    return_content: yes
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+    body:
+      accountId: "{{ jira_account_id }}"
+    body_format: json
+    force_basic_auth: yes
+    user: "{{ jira_user }}"
+    password: "{{ jira_pass }}"
+  when: jira_task == "assign"
+
+- name: Comment issue with {{ jira_result }}
+  jira:
+    uri: '{{ jira_server }}'
+    username: '{{ jira_user }}'
+    password: '{{ jira_pass }}'
+    issue: '{{ issue.meta.key }}'
+    operation: comment
+    comment: |
+      {{ jira_comment }}
+  when: jira_task == "comment"
+
+- name: Change transition to {{ transition_type }}
+  uri:
+    url: "{{ jira_server }}/rest/api/3/issue/{{ issue_id }}/transitions"
+    method: POST
+    status_code: 204
+    timeout: 10
+    return_content: yes
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+    body:
+      transition:
+        id: "{{ transition_id }}" # 11 In Progress, 21 Under Rewiew, 31 Approved, 41 Closed
+      accountId: "{{ jira_account_id }}"
+    body_format: json
+    force_basic_auth: yes
+    user: "{{ jira_user }}"
+    password: "{{ jira_pass }}"
+  when: jira_task == "transition"
+
+- name: Set labels on issue {{ issue_id }}
+  jira:
+    uri: '{{ jira_server }}'
+    username: '{{ jira_user }}'
+    password: '{{ jira_pass }}'
+    issue: '{{ issue_id }}' # '{{ issue.meta.key }}'
+    operation: edit
+  args:
+    fields:
+      labels: "{{ jira_labels }}"
+  when: jira_task == "labels"

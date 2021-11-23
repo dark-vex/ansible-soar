@@ -1,0 +1,20 @@
+---
+- name: Alert has been {{ zabbix_transition_type }}
+  uri:
+    url: "{{ zabbix_url }}"
+    method: POST
+    status_code: 200
+    timeout: 10
+    return_content: yes
+    headers:
+      Content-Type: application/json
+    body:
+      jsonrpc: 2.0
+      method: event.acknowledge
+      params:
+        eventids: "{{ zabbix_event_id }}"
+        action: "{{ zabbix_transition_id }}" # 1 close - 2 ack - 4 add message - 8 change severity - 16 unack
+        message: "Remediation attempted via Ansible Playbook ({{ ansible_date_time.date }} {{ ansible_date_time.time }})"
+      auth: "{{ token }}"
+      id: 1
+    body_format: json

@@ -1,0 +1,19 @@
+---
+- name: Block IP on Sophos {{ sophos_host }}
+  uri:
+    url: "{{ sophos_host }}/webconsole/APIController?reqxml=<Request><Login><Username>{{ sophos_user }}</Username><Password>{{ sophos_pass }}</Password></Login><Set><IPHost><Name>AbuseIPDB_{{ ipdb_ipparsed }}</Name><IPFamily>IPv4</IPFamily><HostType>IP</HostType><HostGroupList><HostGroup>AbuseIPDB-List</HostGroup></HostGroupList><IPAddress>{{ ipdb_ip }}</IPAddress></IPHost></Set></Request>"
+    method: GET
+    return_content: yes
+    status_code: 200
+    timeout: 10
+    validate_certs: no
+  register: sophos_ban
+  when: ipdb_score is version('50', '>=')
+
+- debug: msg="{{ sophos_ban.content | regex_findall('Status code=\"(\d+)\"') }}"
+  when: ipdb_score is version('50', '>=')
+
+- name: Gathering Sophos API Call Result
+  set_fact:
+    #sophos_ban_status: "{{ sophos_ban.content | regex_findall('Status code=\\(\\d+\\)') }}"
+    sophos_ban_status: "{{ sophos_ban.content | regex_findall('Configuration applied successfully') }}"
