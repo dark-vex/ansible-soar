@@ -138,4 +138,6 @@
         # Change to Closed
         - include: tasks/jira.yml jira_task=transition transition_id="41" transition_type="Closed" # 11 In Progress, 21 Under Rewiew, 31 Approved, 41 Closed
         when: sophos_ban_status[0] == 'Configuration applied successfully'
+        tags:
+          - manual_ban
       when: ipdb_score is version('50', '>=')
